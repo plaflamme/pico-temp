@@ -1,9 +1,11 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::prelude::*;
 use cortex_m_rt::entry;
 use panic_halt as _;
-use rp2040_pac::Peripherals;
+use rp2040_pac::{Peripherals, CorePeripherals};
+use cortex_m::delay::Delay;
 
 #[link_section = ".boot_loader"]
 #[used]
@@ -141,13 +143,62 @@ fn gpio_set_dir(p: &mut Peripherals, dir: Dir, pin: u8) {
     };
 }
 
+fn gpio_out_set(p: &mut Peripherals, pin: u8) {
+    p.SIO.gpio_out_set.write(|w| unsafe {
+       w.bits(1 << pin);
+       w
+    });
+}
+
+fn gpio_out_clr(p: &mut Peripherals, pin: u8) {
+    p.SIO.gpio_out_clr.write(|w| unsafe {
+        w.bits(1 << pin);
+        w
+    });
+}
+
+fn gpio_in(p: &mut Peripherals, pin: u8) -> bool {
+    p.SIO.gpio_in.read().bits() & (1 << pin) == 1
+}
+
 struct Dht {
     humidity: f32,
     temp: f32,
 }
 
-fn read_from_dht(_: &mut Peripherals) -> Dht {
-    unimplemented!()
+fn read_from_dht(p: &mut Peripherals, delay: &mut Delay) -> Dht {
+    gpio_set_dir(p, Dir::Out, DHT_PIN);
+    gpio_out_clr(p, DHT_PIN);
+    delay.delay_ms(20);
+    gpio_set_dir(p, Dir::In, DHT_PIN);
+
+    gpio_out_set(p, LED_PIN);
+    // wait for low
+    loop {
+        if gpio_in(p, DHT_PIN) == false {
+            break;
+        }
+    }
+    // wait for high (ack)
+    loop {
+        if gpio_in(p, DHT_PIN) == true {
+            break;
+        }
+    }
+    // wait for low (start)
+    loop {
+        if gpio_in(p, DHT_PIN) == false {
+            break;
+        }
+    }
+    gpio_out_clr(p, LED_PIN);
+
+    // Every bit starts with th DHT pulling the line low for 50us, then
+    //   0: pulled up for ~26-28us
+    //   1: pulled up for 70us
+    // TODO: read 40 bits
+
+    Dht { humidity: 0.0, temp: 0.0 }
 }
 
 static LED_PIN: u8 = 25;
@@ -156,14 +207,18 @@ static DHT_PIN: u8 = 15;
 #[entry]
 fn main() -> ! {
     let mut p = Peripherals::take().unwrap();
+    let cp = CorePeripherals::take().unwrap();
 
     unsafe { setup_chip(&mut p) };
+
+    let mut delay = Delay::new(cp.SYST, 8_000_000);
 
     gpio_init(&mut p, LED_PIN);
     gpio_init(&mut p, DHT_PIN);
     gpio_set_dir(&mut p, Dir::Out,LED_PIN);
 
     loop {
-        let _ = read_from_dht(&mut p);
+        delay.delay_ms(1000);
+        let _ = read_from_dht(&mut p, &mut delay);
     }
 }
