@@ -158,51 +158,80 @@ fn gpio_out_clr(p: &mut Peripherals, pin: u8) {
 }
 
 fn gpio_in(p: &mut Peripherals, pin: u8) -> bool {
-    p.SIO.gpio_in.read().bits() & (1 << pin) == 1
+    p.SIO.gpio_in.read().bits() & (1 << pin) != 0
 }
 
 struct Dht {
-    humidity: f32,
-    temp: f32,
+    relative_humdity: u8,
+    temperature: i8,
 }
 
-fn read_from_dht(p: &mut Peripherals, delay: &mut Delay) -> Dht {
-    gpio_set_dir(p, Dir::Out, DHT_PIN);
-    gpio_out_clr(p, DHT_PIN);
-    delay.delay_ms(20);
-    gpio_set_dir(p, Dir::In, DHT_PIN);
+impl From<[u8;4]> for Dht {
+    fn from(values: [u8; 4]) -> Self {
+        let [rh_i, _, temp_i, _] = values;
+        Dht { relative_humdity: rh_i, temperature: temp_i as i8 }
+    }
+}
 
-    gpio_out_set(p, LED_PIN);
-    // wait for low
-    loop {
-        if gpio_in(p, DHT_PIN) == false {
-            break;
-        }
-    }
-    // wait for high (ack)
-    loop {
-        if gpio_in(p, DHT_PIN) == true {
-            break;
-        }
-    }
-    // wait for low (start)
-    loop {
-        if gpio_in(p, DHT_PIN) == false {
-            break;
-        }
-    }
-    gpio_out_clr(p, LED_PIN);
-
+fn read_bit(p: &mut Peripherals, delay: &mut Delay) -> bool {
     // Every bit starts with th DHT pulling the line low for 50us, then
     //   0: pulled up for ~26-28us
     //   1: pulled up for 70us
-    // TODO: read 40 bits
+    while gpio_in(p, DHT_PIN) == false {cortex_m::asm::nop();};
+    delay.delay_us(35);
+    let value = gpio_in(p, DHT_PIN);
+    while gpio_in(p, DHT_PIN) == true {cortex_m::asm::nop();};
+    value
+}
 
-    Dht { humidity: 0.0, temp: 0.0 }
+fn read_byte(p: &mut Peripherals, delay: &mut Delay) -> u8 {
+    let mut byte = 0u8;
+    for bit in 7..=0 {
+        if read_bit(p, delay) {
+            byte |= 1 << bit;
+        }
+    };
+    byte
+}
+
+fn read_from_dht(p: &mut Peripherals, delay: &mut Delay) -> Option<Dht> {
+
+    gpio_out_set(p, LED_PIN);
+
+    // The start signal is pull down, wait > 18ms, pull up, switch to input mode
+    gpio_set_dir(p, Dir::Out, DHT_PIN);
+    gpio_out_clr(p, DHT_PIN);
+    delay.delay_ms(20);
+    // TODO: is this necessary or does setting the pin to input mode sufficient?
+    gpio_out_set(p, DHT_PIN);
+    gpio_set_dir(p, Dir::In, DHT_PIN);
+    delay.delay_us(48);
+
+    // gpio_out_clr(p, LED_PIN);
+    while gpio_in(p, DHT_PIN) == false {
+        cortex_m::asm::nop();
+    };
+    gpio_out_clr(p, LED_PIN);
+    while gpio_in(p, DHT_PIN) == true {
+        cortex_m::asm::nop();
+    };
+
+    let mut values = [0u8; 4];
+    for byte in values.iter_mut() {
+        *byte = read_byte(p, delay);
+    };
+    let csum = read_byte(p, delay);
+    gpio_out_set(p, LED_PIN);
+    if values.iter().sum::<u8>() != csum {
+        None
+    } else {
+        gpio_out_clr(p, LED_PIN);
+        Some(Dht::from(values))
+    }
 }
 
 static LED_PIN: u8 = 25;
-static DHT_PIN: u8 = 15;
+static DHT_PIN: u8 = 4;
 
 #[entry]
 fn main() -> ! {
@@ -212,6 +241,7 @@ fn main() -> ! {
     unsafe { setup_chip(&mut p) };
 
     let mut delay = Delay::new(cp.SYST, 8_000_000);
+    delay.delay_ms(1000);
 
     gpio_init(&mut p, LED_PIN);
     gpio_init(&mut p, DHT_PIN);
@@ -219,6 +249,23 @@ fn main() -> ! {
 
     loop {
         delay.delay_ms(1000);
-        let _ = read_from_dht(&mut p, &mut delay);
+        match read_from_dht(&mut p, &mut delay) {
+            Some(dht) => {
+                for _ in 0..dht.temperature {
+                    gpio_out_clr(&mut p, LED_PIN);
+                    delay.delay_ms(250);
+                    gpio_out_set(&mut p, LED_PIN);
+                    delay.delay_ms(250);
+                }
+            },
+            None => {
+                for _ in 0..5 {
+                    gpio_out_clr(&mut p, LED_PIN);
+                    delay.delay_ms(500);
+                    gpio_out_set(&mut p, LED_PIN);
+                    delay.delay_ms(500);
+                }
+            }
+        }
     }
 }
