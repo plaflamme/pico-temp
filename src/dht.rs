@@ -101,7 +101,7 @@ impl Dht {
 }
 
 pub struct Reading {
-    pub relative_humdity: u8,
+    pub relative_humidity: u8,
     pub temperature: f32,
 }
 
@@ -114,7 +114,7 @@ impl From<[u8; 4]> for Reading {
         // This way is the most common one I've seen in other source files.
         let temperature = temp_i as f32 + (temp_d as f32 / 10.0);
         Reading {
-            relative_humdity: rh_i,
+            relative_humidity: rh_i,
             temperature,
         }
     }
