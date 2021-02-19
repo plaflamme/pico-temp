@@ -1,11 +1,12 @@
 #![no_std]
 #![no_main]
 
+use crate::gpio::{Input, Output, Pin, Sio};
+use cortex_m::delay::Delay;
 use cortex_m::prelude::*;
 use cortex_m_rt::entry;
 use panic_halt as _;
-use rp2040_pac::{Peripherals, CorePeripherals};
-use cortex_m::delay::Delay;
+use rp2040_pac::{CorePeripherals, Peripherals};
 
 mod gpio;
 
@@ -68,12 +69,12 @@ unsafe fn setup_chip(p: &mut rp2040_pac::Peripherals) {
     // These must stay in reset until the clocks are sorted out.
     const PERIPHERALS_TO_UNRESET: u32 = RESETS_RESET_BITS
         & !(RESETS_RESET_ADC_BITS
-        | RESETS_RESET_RTC_BITS
-        | RESETS_RESET_SPI0_BITS
-        | RESETS_RESET_SPI1_BITS
-        | RESETS_RESET_UART0_BITS
-        | RESETS_RESET_UART1_BITS
-        | RESETS_RESET_USBCTRL_BITS);
+            | RESETS_RESET_RTC_BITS
+            | RESETS_RESET_SPI0_BITS
+            | RESETS_RESET_SPI1_BITS
+            | RESETS_RESET_UART0_BITS
+            | RESETS_RESET_UART1_BITS
+            | RESETS_RESET_USBCTRL_BITS);
 
     // Write 0 to the reset field to take it out of reset
     p.RESETS.reset.modify(|_r, w| {
@@ -103,72 +104,12 @@ unsafe fn setup_chip(p: &mut rp2040_pac::Peripherals) {
     }
 }
 
-// https://github.com/raspberrypi/pico-sdk/blob/2d5789eca89658a7f0a01e2d6010c0f254605d72/src/rp2_common/hardware_gpio/gpio.c#L154-L158
-fn gpio_init(p: &mut Peripherals, pin: u8) {
-    p.SIO.gpio_oe_clr.write(|w| unsafe {
-        w.bits(1 << pin);
-        w
-    });
-    p.SIO.gpio_out_clr.write(|w| unsafe {
-        w.bits(1 << pin);
-        w
-    });
-
-    // Set input enable on, output disable off
-    p.PADS_BANK0.gpio[pin as usize].write(|w| {
-        w.od().clear_bit();
-        w.ie().set_bit();
-        w
-    });
-
-    p.IO_BANK0.gpio[pin as usize].gpio_ctrl.write(|w| {
-        w.funcsel().sio_0();
-        w
-    });
-}
-
-enum Dir {
-    In,
-    Out,
-}
-
-fn gpio_set_dir(p: &mut Peripherals, dir: Dir, pin: u8) {
-    match dir {
-        Dir::In => p.SIO.gpio_oe_clr.write(|w| unsafe {
-            w.bits(1 << pin);
-            w
-        }),
-        Dir::Out => p.SIO.gpio_oe_set.write(|w| unsafe {
-            w.bits(1 << pin);
-            w
-        }),
-    };
-}
-
-fn gpio_out_set(p: &mut Peripherals, pin: u8) {
-    p.SIO.gpio_out_set.write(|w| unsafe {
-       w.bits(1 << pin);
-       w
-    });
-}
-
-fn gpio_out_clr(p: &mut Peripherals, pin: u8) {
-    p.SIO.gpio_out_clr.write(|w| unsafe {
-        w.bits(1 << pin);
-        w
-    });
-}
-
-fn gpio_in(p: &mut Peripherals, pin: u8) -> bool {
-    p.SIO.gpio_in.read().bits() & (1 << pin) != 0
-}
-
 struct Dht {
     relative_humdity: u8,
     temperature: f32,
 }
 
-impl From<[u8;4]> for Dht {
+impl From<[u8; 4]> for Dht {
     fn from(values: [u8; 4]) -> Self {
         // it seems as though the decimal part of the relative humidity is always 0 on my unit.
         let [rh_i, _, temp_i, temp_d] = values;
@@ -176,7 +117,10 @@ impl From<[u8;4]> for Dht {
         // The way to interpret the 2 values is not really documented.
         // This way is the most common one I've seen in other source files.
         let temperature = temp_i as f32 + (temp_d as f32 / 10.0);
-        Dht { relative_humdity: rh_i, temperature }
+        Dht {
+            relative_humdity: rh_i,
+            temperature,
+        }
     }
 }
 
@@ -186,10 +130,10 @@ enum DhtError {
 }
 
 macro_rules! wait_for_state {
-    ($p: ident, $delay: ident, $pin: expr, $state: expr, $timeout: expr) => ({
+    ($pin: ident, $delay: ident, $state: expr, $timeout: expr) => {{
         let mut timeout = $timeout;
         loop {
-            if gpio_in($p, $pin) == $state {
+            if $pin.is_set() == $state {
                 break Ok(());
             } else {
                 $delay.delay_us(1);
@@ -199,57 +143,56 @@ macro_rules! wait_for_state {
                 }
             }
         }
-    });
+    }};
 }
 
-
-fn read_bit(p: &mut Peripherals, delay: &mut Delay) -> Result<bool, DhtError> {
+fn read_bit<M>(pin: &Pin<Sio<Input<M>>>, delay: &mut Delay) -> Result<bool, DhtError> {
     // Every bit starts with th DHT pulling the line low for 50us, then
     //   0: pulled up for ~26-28us
     //   1: pulled up for 70us
-    wait_for_state!(p, delay, DHT_PIN, true, 80)?;
+    wait_for_state!(pin, delay, true, 80)?;
     delay.delay_us(35);
-    let value = gpio_in(p, DHT_PIN);
-    wait_for_state!(p, delay, DHT_PIN, false, 50)?;
+    let value = pin.is_set();
+    wait_for_state!(pin, delay, false, 50)?;
     Ok(value)
 }
 
-fn read_byte(p: &mut Peripherals, delay: &mut Delay) -> Result<u8, DhtError> {
+fn read_byte<M>(pin: &Pin<Sio<Input<M>>>, delay: &mut Delay) -> Result<u8, DhtError> {
     let mut byte = 0u8;
     for bit in 7..=0 {
-        if read_bit(p, delay)? {
+        if read_bit(pin, delay)? {
             byte |= 1 << bit;
         }
-    };
+    }
     Ok(byte)
 }
 
-fn read_from_dht(p: &mut Peripherals, delay: &mut Delay) -> Result<Dht, DhtError> {
+fn read_from_dht(led_pin: &Pin<Sio<Output>>, delay: &mut Delay) -> Result<Dht, DhtError> {
+    led_pin.set();
 
-    gpio_out_set(p, LED_PIN);
+    let dht_pin = Pin::new(DHT_PIN).func_sio().output();
 
     // The start signal is pull down, wait > 18ms, pull up, switch to input mode
-    gpio_set_dir(p, Dir::Out, DHT_PIN);
-    gpio_out_clr(p, DHT_PIN);
+    dht_pin.clr();
     delay.delay_ms(20);
-    gpio_out_set(p, DHT_PIN);
-    gpio_set_dir(p, Dir::In, DHT_PIN);
 
+    dht_pin.set();
+    let dht_pin = dht_pin.input();
     // The DHT should pull down in the next 20-40us
     delay.delay_us(40);
 
     // The DHT keeps it down for ~80us and then pulls up
-    wait_for_state!(p, delay, DHT_PIN, true, 100)?;
+    wait_for_state!(dht_pin, delay, true, 100)?;
     // The DHT keeps it up for ~80us and then pulls down for the first bit
-    wait_for_state!(p, delay, DHT_PIN, false, 100)?;
+    wait_for_state!(dht_pin, delay, false, 100)?;
 
     let mut values = [0u8; 4];
     for byte in values.iter_mut() {
-        *byte = read_byte(p, delay)?;
-    };
-    let cksum = read_byte(p, delay)?;
+        *byte = read_byte(&dht_pin, delay)?;
+    }
+    let cksum = read_byte(&dht_pin, delay)?;
 
-    gpio_out_clr(p, LED_PIN);
+    led_pin.clr();
 
     let sum = (values.iter().fold(0u32, |a, &b| a + b as u32) & 0xff) as u8;
     if sum != cksum {
@@ -272,26 +215,19 @@ fn main() -> ! {
     // TODO: the frequency used here was determined empirically, it'd be nice to find a better way to do delays.
     let mut delay = Delay::new(cp.SYST, 6_000_000);
 
-    let led_pin = gpio::Pin::new(LED_PIN)
-        .func_sio()
-        .output();
-
-    // gpio_init(&mut p, LED_PIN);
-    gpio_init(&mut p, DHT_PIN);
-    // gpio_set_dir(&mut p, Dir::Out,LED_PIN);
+    let led_pin = Pin::new(LED_PIN).func_sio().output();
 
     loop {
         delay.delay_ms(1000);
-        match read_from_dht(&mut p, &mut delay) {
+        match read_from_dht(&led_pin, &mut delay) {
             Ok(dht) => {
                 for _ in 0..2 {
                     led_pin.clr();
-                    // gpio_out_clr(&mut p, LED_PIN);
                     delay.delay_ms(100);
                     led_pin.set();
                     delay.delay_ms(100);
                 }
-            },
+            }
             Err(e) => {
                 for _ in 0..5 {
                     led_pin.clr();
