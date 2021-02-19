@@ -7,6 +7,8 @@ use panic_halt as _;
 use rp2040_pac::{Peripherals, CorePeripherals};
 use cortex_m::delay::Delay;
 
+mod gpio;
+
 #[link_section = ".boot_loader"]
 #[used]
 pub static BOOT_LOADER: [u8; 256] = rp2040_boot2::BOOT_LOADER;
@@ -270,37 +272,42 @@ fn main() -> ! {
     // TODO: the frequency used here was determined empirically, it'd be nice to find a better way to do delays.
     let mut delay = Delay::new(cp.SYST, 6_000_000);
 
-    gpio_init(&mut p, LED_PIN);
+    let led_pin = gpio::Pin::new(LED_PIN)
+        .func_sio()
+        .output();
+
+    // gpio_init(&mut p, LED_PIN);
     gpio_init(&mut p, DHT_PIN);
-    gpio_set_dir(&mut p, Dir::Out,LED_PIN);
+    // gpio_set_dir(&mut p, Dir::Out,LED_PIN);
 
     loop {
         delay.delay_ms(1000);
         match read_from_dht(&mut p, &mut delay) {
             Ok(dht) => {
                 for _ in 0..2 {
-                    gpio_out_clr(&mut p, LED_PIN);
+                    led_pin.clr();
+                    // gpio_out_clr(&mut p, LED_PIN);
                     delay.delay_ms(100);
-                    gpio_out_set(&mut p, LED_PIN);
+                    led_pin.set();
                     delay.delay_ms(100);
                 }
             },
             Err(e) => {
                 for _ in 0..5 {
-                    gpio_out_clr(&mut p, LED_PIN);
+                    led_pin.clr();
                     delay.delay_ms(100);
-                    gpio_out_set(&mut p, LED_PIN);
+                    led_pin.set();
                     delay.delay_ms(100);
                 }
-                gpio_out_clr(&mut p, LED_PIN);
+                led_pin.clr();
                 delay.delay_ms(1000);
-                gpio_out_set(&mut p, LED_PIN);
+                led_pin.set();
                 let error_delay = match e {
                     DhtError::Timeout => 100,
                     DhtError::Checksum => 1000,
                 };
                 delay.delay_ms(error_delay);
-                gpio_out_clr(&mut p, LED_PIN);
+                led_pin.clr();
             }
         }
     }
