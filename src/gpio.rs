@@ -29,20 +29,25 @@ impl Pin<()> {
 }
 
 impl<F> Pin<F> {
-    fn sio_block(&self) -> &rp2040_pac::sio::RegisterBlock {
-        unsafe { &*rp2040_pac::SIO::ptr() }
-    }
 
-    fn pad_block(&self) -> &rp2040_pac::pads_bank0::GPIO {
+    /// Returns the PADS_BANK0 register for this pin.
+    fn pad_reg(&self) -> &rp2040_pac::pads_bank0::GPIO {
         let pad_block = unsafe { &*rp2040_pac::PADS_BANK0::ptr() };
         &pad_block.gpio[self.pin as usize]
     }
 
-    fn io_block(&self) -> &rp2040_pac::io_bank0::GPIO {
+    /// Returns the IO_BANK0 register for this pin.
+    fn io_reg(&self) -> &rp2040_pac::io_bank0::GPIO {
         let io_block = unsafe { &*rp2040_pac::IO_BANK0::ptr() };
         &io_block.gpio[self.pin as usize]
     }
 
+    /// Returns the SIO register block.
+    fn sio_block(&self) -> &rp2040_pac::sio::RegisterBlock {
+        unsafe { &*rp2040_pac::SIO::ptr() }
+    }
+
+    /// Utility function to set this Pin's bit in a Writable register.
     fn set_bit<REG>(&self, reg: &Reg<u32, REG>)
     where
         Reg<u32, REG>: Writable + ResetValue<Type = u32>,
@@ -56,21 +61,21 @@ impl<F> Pin<F> {
 
 impl Pin<Unspecified> {
     pub fn func_sio(self) -> Pin<Sio<Unspecified>> {
-        self.io_block().gpio_ctrl.write(|w| {
-            w.funcsel().sio_0();
-            w
-        });
+        // pico-sdk gpio_init
+        self.set_bit(&self.sio_block().gpio_oe_clr);
+        self.set_bit(&self.sio_block().gpio_out_clr);
 
-        // TODO: not sure why we do this?
-        self.pad_block().write(|w| {
+        // pico-sdk gpio_set_function
+        self.pad_reg().write(|w| {
             w.od().clear_bit();
             w.ie().set_bit();
             w
         });
 
-        // TODO: not sure why we do this? I think this sets the pin to 0?
-        self.set_bit(&self.sio_block().gpio_oe_clr);
-        self.set_bit(&self.sio_block().gpio_out_clr);
+        self.io_reg().gpio_ctrl.write(|w| {
+            w.funcsel().sio_0();
+            w
+        });
 
         Pin {
             pin: self.pin,
@@ -95,6 +100,22 @@ impl<IO> Pin<Sio<IO>> {
             _func: PhantomData,
         }
     }
+
+    fn set_sio_bit<'a, F, REG: 'a>(&'a self, f: F)
+    where
+        F: FnOnce(&'a rp2040_pac::sio::RegisterBlock) -> &'a Reg<u32, REG>,
+        Reg<u32, REG>: Writable + ResetValue<Type = u32>,
+    {
+        self.set_bit(f(self.sio_block()));
+    }
+
+    fn set_out_set(&self) {
+        self.set_sio_bit(|b| &b.gpio_out_set)
+    }
+
+    fn set_out_clr(&self) {
+        self.set_sio_bit(|b| &b.gpio_out_clr)
+    }
 }
 
 impl Pin<Sio<Output>> {
@@ -108,7 +129,7 @@ impl Pin<Sio<Output>> {
 
 impl<M> Pin<Sio<Input<M>>> {
     pub fn schmitt_trigger(self) -> Pin<Sio<Input<SchmittTrigger>>> {
-        self.pad_block().write(|w| {
+        self.pad_reg().write(|w| {
             w.schmitt();
             w
         });
@@ -119,7 +140,7 @@ impl<M> Pin<Sio<Input<M>>> {
     }
 
     pub fn pull_up(self) -> Pin<Sio<Input<PullUp>>> {
-        self.pad_block().write(|w| {
+        self.pad_reg().write(|w| {
             w.pue();
             w
         });
@@ -130,7 +151,7 @@ impl<M> Pin<Sio<Input<M>>> {
     }
 
     pub fn pull_down(self) -> Pin<Sio<Input<PullDown>>> {
-        self.pad_block().write(|w| {
+        self.pad_reg().write(|w| {
             w.pde();
             w
         });
