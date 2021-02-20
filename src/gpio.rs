@@ -57,13 +57,27 @@ impl<F> Pin<F> {
             w
         });
     }
+
+    /// Utility function to set this Pin's bit in the Writable register returned by f.
+    fn set_sio_bit<'a, Fn, REG: 'a>(&'a self, f: Fn)
+        where
+            Fn: FnOnce(&'a rp2040_pac::sio::RegisterBlock) -> &'a Reg<u32, REG>,
+            Reg<u32, REG>: Writable + ResetValue<Type = u32>,
+    {
+        self.set_bit(f(self.sio_block()));
+    }
 }
 
 impl Pin<Unspecified> {
     pub fn func_sio(self) -> Pin<Sio<Unspecified>> {
+        let pin: Pin<Sio<Unspecified>> = Pin {
+            pin: self.pin,
+            _func: PhantomData,
+        };
+
         // pico-sdk gpio_init
-        self.set_bit(&self.sio_block().gpio_oe_clr);
-        self.set_bit(&self.sio_block().gpio_out_clr);
+        pin.oe_clr();
+        pin.out_clr();
 
         // pico-sdk gpio_set_function
         self.pad_reg().write(|w| {
@@ -77,16 +91,24 @@ impl Pin<Unspecified> {
             w
         });
 
-        Pin {
-            pin: self.pin,
-            _func: PhantomData,
+        pin
+    }
+}
+
+macro_rules! sio_reg {
+    ($name:tt, $n:ident) => {
+        fn $name(&self) {
+            self.sio_block().$n.write(|w| unsafe {
+                w.bits(1 << self.pin);
+                w
+            });
         }
     }
 }
 
 impl<IO> Pin<Sio<IO>> {
     pub fn input(self) -> Pin<Sio<Input<Unspecified>>> {
-        self.set_bit(&self.sio_block().gpio_oe_clr);
+        self.oe_clr();
         Pin {
             pin: self.pin,
             _func: PhantomData,
@@ -94,36 +116,27 @@ impl<IO> Pin<Sio<IO>> {
     }
 
     pub fn output(self) -> Pin<Sio<Output>> {
-        self.set_bit(&self.sio_block().gpio_oe_set);
+        self.oe_set();
         Pin {
             pin: self.pin,
             _func: PhantomData,
         }
     }
 
-    fn set_sio_bit<'a, F, REG: 'a>(&'a self, f: F)
-    where
-        F: FnOnce(&'a rp2040_pac::sio::RegisterBlock) -> &'a Reg<u32, REG>,
-        Reg<u32, REG>: Writable + ResetValue<Type = u32>,
-    {
-        self.set_bit(f(self.sio_block()));
-    }
-
-    fn set_out_set(&self) {
-        self.set_sio_bit(|b| &b.gpio_out_set)
-    }
-
-    fn set_out_clr(&self) {
-        self.set_sio_bit(|b| &b.gpio_out_clr)
-    }
+    sio_reg!(out_set, gpio_out_set);
+    sio_reg!(out_clr, gpio_out_clr);
+    sio_reg!(out_xor, gpio_out_xor);
+    sio_reg!(oe_set, gpio_oe_set);
+    sio_reg!(oe_clr, gpio_oe_clr);
+    sio_reg!(oe_xor, gpio_oe_xor);
 }
 
 impl Pin<Sio<Output>> {
     pub fn set(&self) {
-        self.set_bit(&self.sio_block().gpio_out_set);
+        self.out_set();
     }
     pub fn clr(&self) {
-        self.set_bit(&self.sio_block().gpio_out_clr);
+        self.out_clr();
     }
 }
 
